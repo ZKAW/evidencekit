@@ -1,0 +1,112 @@
+controls:
+  - id: A.5.15
+    title: Access control
+    rationale: >
+      Access to information must follow business and security requirements.
+      Storage must not be reachable by anonymous users, and long-lived credentials
+      that nobody uses are access rights that should have been withdrawn.
+    hds:
+      - "EXI 05 D.a: risk of failing to control the attribution, modification and withdrawal of access rights"
+    checks:
+      - aws.s3.public_access_block
+      - aws.iam.unused_access_keys
+
+  - id: A.5.17
+    title: Authentication information
+    rationale: >
+      Secrets used to authenticate must be strong, managed over their lifecycle
+      and kept out of places where they can leak, such as source code.
+    hds:
+      - "EXI 05 D.b: risk of failing to control the distribution of electronic identification means"
+    checks:
+      - aws.iam.password_policy
+      - aws.iam.unused_access_keys
+      - github.repo.secret_scanning
+
+  - id: A.5.23
+    title: Information security for use of cloud services
+    rationale: >
+      Under the shared responsibility model the customer secures its own use of
+      the provider: the account owner identity, exposure of stored data and an
+      audit trail of every API call.
+    hds:
+      - "EXI 13: plan and control the split of security responsibilities between the host and its client"
+    checks:
+      - aws.iam.root_mfa
+      - aws.s3.public_access_block
+      - aws.cloudtrail.multi_region
+
+  - id: A.8.2
+    title: Privileged access rights
+    rationale: >
+      The AWS root user bypasses every IAM policy. It must be protected by a
+      second factor because it is the most privileged identity in the account.
+    hds:
+      - "EXI 05 D.a: risk of failing to control the attribution, modification and withdrawal of access rights"
+    checks:
+      - aws.iam.root_mfa
+
+  - id: A.8.5
+    title: Secure authentication
+    rationale: >
+      Authentication must resist password guessing and credential theft, which
+      means strong password rules and multi-factor authentication for both cloud
+      and source code access.
+    hds:
+      - "EXI 05 D.b: risk of failing to control the distribution of electronic identification means"
+    checks:
+      - aws.iam.root_mfa
+      - aws.iam.password_policy
+      - github.org.two_factor_required
+
+  - id: A.8.9
+    title: Configuration management
+    rationale: >
+      Infrastructure and application configuration lives in Git. Protecting the
+      default branch forces changes through a controlled path instead of direct
+      pushes.
+    hds:
+      - "EXI 05 E: risk of failing to control interventions on the system"
+    checks:
+      - github.repo.branch_protection
+
+  - id: A.8.13
+    title: Information backup
+    rationale: >
+      Object versioning keeps previous versions of every object so that deleted
+      or overwritten data can be restored.
+    hds:
+      - "EXI 05 G: risk of hardware or software failure breaking continuity or recovery commitments"
+    checks:
+      - aws.s3.versioning
+
+  - id: A.8.15
+    title: Logging
+    rationale: >
+      Activity must be logged in every region, and the logs must be protected
+      against tampering so that they can support an investigation.
+    hds:
+      - "EXI 05 D.c: risk of losing the traceability and accountability of access"
+    checks:
+      - aws.cloudtrail.multi_region
+      - aws.cloudtrail.log_validation
+
+  - id: A.8.24
+    title: Use of cryptography
+    rationale: >
+      Data at rest must be encrypted so that storage media or reallocated storage
+      do not expose readable data.
+    hds:
+      - "EXI 05 B: risk of losing control of storage media, including the reallocation of storage space"
+    checks:
+      - aws.s3.default_encryption
+
+  - id: A.8.28
+    title: Secure coding
+    rationale: >
+      Changes must reach the default branch through a protected path,
+      vulnerable dependencies must be reported, and committed secrets must be detected.
+    checks:
+      - github.repo.branch_protection
+      - github.repo.dependabot_alerts
+      - github.repo.secret_scanning

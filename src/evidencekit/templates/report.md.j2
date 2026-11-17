@@ -1,0 +1,64 @@
+# Evidence pack {{ pack_id }}
+
+| Field | Value |
+|---|---|
+{% for key, value in metadata.items() %}
+| {{ key }} | {{ value | cell }} |
+{% endfor %}
+
+This pack holds automated technical evidence for a subset of ISO/IEC 27001:2022 Annex A
+controls and of the HDS certification referential. It supports an audit but is not a
+certification, and it says nothing about organizational measures.
+
+## Summary
+
+| Control | Title | Status |
+|---|---|---|
+{% for control in controls %}
+| {{ control.id }} | {{ control.title }} | {{ statuses[control.id] }} |
+{% endfor %}
+
+## Controls
+{% for control in controls %}
+
+### {{ control.id }} {{ control.title }}
+
+{{ control.rationale }}
+
+{% if control.hds %}
+HDS references:
+
+{% for reference in control.hds %}
+- {{ reference }}
+{% endfor %}
+
+{% endif %}
+| Check | Status | Summary | Evidence file | SHA-256 |
+|---|---|---|---|---|
+{% for check_id in control.checks %}
+{% if check_id in results %}
+{% set path = evidence_files[check_id] %}
+| `{{ check_id }}` | {{ results[check_id].status }} | {{ results[check_id].summary | cell }} | `{{ path }}` | `{{ hashes[path] }}` |
+{% else %}
+| `{{ check_id }}` | not collected | | | |
+{% endif %}
+{% endfor %}
+{% endfor %}
+
+## Evidence files
+
+| File | SHA-256 |
+|---|---|
+{% for path, digest in hashes.items() %}
+| `{{ path }}` | `{{ digest }}` |
+{% endfor %}
+
+## Verification
+
+`manifest.json` lists the SHA-256 of every file in this pack, including this report.
+The SHA-256 of `manifest.json` is printed at collection time and stored in `manifest.sha256`.
+Keep a copy of that hash outside the pack, then run:
+
+```
+evidencekit verify <pack directory> --expected-manifest-sha256 <hash>
+```
