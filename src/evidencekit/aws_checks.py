@@ -16,6 +16,8 @@ REQUIRED_PASSWORD_FLAGS = (
     "RequireSymbols",
 )
 MAX_ACCESS_KEY_IDLE_DAYS = 90
+MAX_USER_IDLE_DAYS = 90
+MIN_LOG_RETENTION_DAYS = 365
 VISIBLE_KEY_ID_CHARS = 4
 PUBLIC_ACCESS_BLOCK_FLAGS = (
     "BlockPublicAcls",
@@ -25,6 +27,7 @@ PUBLIC_ACCESS_BLOCK_FLAGS = (
 )
 NO_PUBLIC_ACCESS_BLOCK = "NoSuchPublicAccessBlockConfiguration"
 NO_BUCKET_ENCRYPTION = "ServerSideEncryptionConfigurationNotFoundError"
+NO_LIFECYCLE = "NoSuchLifecycleConfiguration"
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,39 @@ def key_record(user_name: str, key: dict[str, Any], last_used: datetime | None, 
 
 def mask_key_id(key_id: str) -> str:
     return "*" * (len(key_id) - VISIBLE_KEY_ID_CHARS) + key_id[-VISIBLE_KEY_ID_CHARS:]
+
+
+def inactive_users(ctx: AwsContext) -> Outcome:
+    iam = ctx.session.client("iam")
+    users = [
+        user_activity(user, _last_key_use(iam, user["UserName"]), ctx.now)
+        for page in iam.get_paginator("list_users").paginate()
+        for user in page["Users"]
+    ]
+    for user in users:
+        user["active"] = user["idle_days"] <= MAX_USER_IDLE_DAYS
+    return outcome_for(users, "active", f"IAM users with no activity for more than {MAX_USER_IDLE_DAYS} days")
+
+
+def _last_key_use(iam: Any, user_name: str) -> datetime | None:
+    uses = [
+        iam.get_access_key_last_used(AccessKeyId=key["AccessKeyId"])["AccessKeyLastUsed"].get("LastUsedDate")
+        for page in iam.get_paginator("list_access_keys").paginate(UserName=user_name)
+        for key in page["AccessKeyMetadata"]
+    ]
+    return max((use for use in uses if use), default=None)
+
+
+def user_activity(user: dict[str, Any], last_key_use: datetime | None, now: datetime) -> dict[str, Any]:
+    activity = [moment for moment in (user.get("PasswordLastUsed"), last_key_use) if moment]
+    last_active = max(activity, default=None)
+    return {
+        "user": user["UserName"],
+        "created": user["CreateDate"].isoformat(),
+        "console_last_used": user["PasswordLastUsed"].isoformat() if user.get("PasswordLastUsed") else None,
+        "access_key_last_used": last_key_use.isoformat() if last_key_use else None,
+        "idle_days": (now - (last_active or user["CreateDate"])).days,
+    }
 
 
 def s3_public_access_block(ctx: AwsContext) -> Outcome:
@@ -191,14 +227,81 @@ def cloudtrail_log_validation(ctx: AwsContext) -> Outcome:
     return outcome_for(trails, "log_file_validation", "trails without log file validation")
 
 
+def cloudtrail_log_retention(ctx: AwsContext) -> Outcome:
+    s3 = ctx.session.client("s3")
+    trails = [_retention_record(s3, trail) for trail in _trails(ctx.session.client("cloudtrail"))]
+    if not trails:
+        return Outcome(Status.FAIL, "no CloudTrail trail is configured", {"resources": []})
+    return outcome_for(trails, "retained", f"trails whose logs expire before {MIN_LOG_RETENTION_DAYS} days")
+
+
+def _retention_record(s3: Any, trail: dict[str, Any]) -> dict[str, Any]:
+    bucket = trail["S3BucketName"]
+    days = log_expiration_days(_lifecycle_rules(s3, bucket))
+    return {
+        "name": trail["Name"],
+        "bucket": bucket,
+        "expires_after_days": days,
+        "retained": days is None or days >= MIN_LOG_RETENTION_DAYS,
+    }
+
+
+def _lifecycle_rules(s3: Any, bucket: str) -> list[dict[str, Any]]:
+    try:
+        return s3.get_bucket_lifecycle_configuration(Bucket=bucket)["Rules"]
+    except ClientError as error:
+        if _error_code(error) == NO_LIFECYCLE:
+            return []
+        raise
+
+
+def log_expiration_days(rules: list[dict[str, Any]]) -> int | None:
+    days = [
+        rule["Expiration"]["Days"]
+        for rule in rules
+        if rule["Status"] == "Enabled" and "Days" in rule.get("Expiration", {})
+    ]
+    return min(days, default=None)
+
+
 def _trails(cloudtrail: Any) -> list[dict[str, Any]]:
     return cloudtrail.describe_trails(includeShadowTrails=True)["trailList"]
+
+
+def kms_key_rotation(ctx: AwsContext) -> Outcome:
+    kms = ctx.session.client("kms")
+    described = [
+        kms.describe_key(KeyId=key["KeyId"])["KeyMetadata"]
+        for page in kms.get_paginator("list_keys").paginate()
+        for key in page["Keys"]
+    ]
+    keys = [_rotation_record(kms, metadata) for metadata in described if _is_rotatable_customer_key(metadata)]
+    return outcome_for(keys, "rotation_enabled", "customer managed keys without automatic rotation")
+
+
+def _is_rotatable_customer_key(metadata: dict[str, Any]) -> bool:
+    return (
+        metadata["KeyManager"] == "CUSTOMER"
+        and metadata["KeyState"] == "Enabled"
+        and metadata.get("KeySpec") == "SYMMETRIC_DEFAULT"
+        and metadata.get("Origin") == "AWS_KMS"
+    )
+
+
+def _rotation_record(kms: Any, metadata: dict[str, Any]) -> dict[str, Any]:
+    rotation = kms.get_key_rotation_status(KeyId=metadata["KeyId"])
+    return {
+        "key_id": metadata["KeyId"],
+        "description": metadata.get("Description", ""),
+        "rotation_enabled": rotation["KeyRotationEnabled"],
+    }
 
 
 AWS_CHECKS = (
     Check("aws.iam.root_mfa", "Root user has MFA enabled", Provider.AWS, root_mfa),
     Check("aws.iam.password_policy", "IAM password policy meets the baseline", Provider.AWS, password_policy),
     Check("aws.iam.unused_access_keys", "No active access key is left unused", Provider.AWS, unused_access_keys),
+    Check("aws.iam.inactive_users", "No IAM user is left inactive", Provider.AWS, inactive_users),
     Check("aws.s3.public_access_block", "S3 buckets block public access", Provider.AWS, s3_public_access_block),
     Check("aws.s3.default_encryption", "S3 buckets encrypt objects by default", Provider.AWS, s3_default_encryption),
     Check("aws.s3.versioning", "S3 buckets keep object versions", Provider.AWS, s3_versioning),
@@ -214,4 +317,11 @@ AWS_CHECKS = (
         Provider.AWS,
         cloudtrail_log_validation,
     ),
+    Check(
+        "aws.cloudtrail.log_retention",
+        f"CloudTrail logs are kept for at least {MIN_LOG_RETENTION_DAYS} days",
+        Provider.AWS,
+        cloudtrail_log_retention,
+    ),
+    Check("aws.kms.key_rotation", "Customer managed KMS keys rotate automatically", Provider.AWS, kms_key_rotation),
 )

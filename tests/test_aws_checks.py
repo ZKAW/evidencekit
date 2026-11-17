@@ -2,14 +2,20 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import DATA_BUCKET, REGION, TRAIL
+from conftest import DATA_BUCKET, REGION, TRAIL, TRAIL_BUCKET
 
 from evidencekit.aws_checks import (
     MAX_ACCESS_KEY_IDLE_DAYS,
+    MAX_USER_IDLE_DAYS,
+    MIN_LOG_RETENTION_DAYS,
     AwsContext,
+    cloudtrail_log_retention,
     cloudtrail_log_validation,
     cloudtrail_multi_region,
+    inactive_users,
     key_record,
+    kms_key_rotation,
+    log_expiration_days,
     mask_key_id,
     password_policy,
     root_mfa,
@@ -17,6 +23,7 @@ from evidencekit.aws_checks import (
     s3_public_access_block,
     s3_versioning,
     unused_access_keys,
+    user_activity,
 )
 from evidencekit.model import Status
 
@@ -150,3 +157,72 @@ def test_stopped_trail_fails_multi_region(compliant_aws: AwsContext) -> None:
     outcome = cloudtrail_multi_region(compliant_aws)
     assert outcome.status is Status.FAIL
     assert outcome.evidence["trails"][0]["logging"] is False
+
+
+def _expire_trail_logs_after(ctx: AwsContext, days: int) -> None:
+    ctx.session.client("s3").put_bucket_lifecycle_configuration(
+        Bucket=TRAIL_BUCKET,
+        LifecycleConfiguration={
+            "Rules": [{"ID": "expire", "Status": "Enabled", "Filter": {"Prefix": ""}, "Expiration": {"Days": days}}]
+        },
+    )
+
+
+def test_trail_logs_without_expiration_are_retained(compliant_aws: AwsContext) -> None:
+    outcome = cloudtrail_log_retention(compliant_aws)
+    assert outcome.status is Status.PASS
+    assert outcome.evidence["resources"][0]["expires_after_days"] is None
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"), [(MIN_LOG_RETENTION_DAYS - 1, Status.FAIL), (MIN_LOG_RETENTION_DAYS, Status.PASS)]
+)
+def test_trail_logs_must_live_at_least_the_minimum(compliant_aws: AwsContext, days: int, expected: Status) -> None:
+    _expire_trail_logs_after(compliant_aws, days)
+    assert cloudtrail_log_retention(compliant_aws).status is expected
+
+
+def test_log_retention_fails_without_trails(aws: AwsContext) -> None:
+    assert cloudtrail_log_retention(aws).status is Status.FAIL
+
+
+def test_shortest_enabled_expiration_wins() -> None:
+    rules = [
+        {"Status": "Enabled", "Expiration": {"Days": 400}},
+        {"Status": "Enabled", "Expiration": {"Days": 30}},
+        {"Status": "Disabled", "Expiration": {"Days": 1}},
+        {"Status": "Enabled", "Transitions": [{"Days": 10, "StorageClass": "GLACIER"}]},
+    ]
+    assert log_expiration_days(rules) == 30
+
+
+def test_customer_keys_must_rotate_and_aws_managed_keys_are_ignored(aws: AwsContext) -> None:
+    kms = aws.session.client("kms")
+    rotated = kms.create_key(Description="patient-records")["KeyMetadata"]["KeyId"]
+    kms.enable_key_rotation(KeyId=rotated)
+    assert kms_key_rotation(aws).status is Status.PASS
+
+    static = kms.create_key(Description="backups")["KeyMetadata"]["KeyId"]
+    kms.create_key(KeySpec="RSA_2048", KeyUsage="SIGN_VERIFY")
+    outcome = kms_key_rotation(aws)
+
+    assert outcome.status is Status.FAIL
+    failing = [key["key_id"] for key in outcome.evidence["resources"] if not key["rotation_enabled"]]
+    assert failing == [static]
+
+
+def test_new_user_is_active_until_the_idle_limit(compliant_aws: AwsContext) -> None:
+    compliant_aws.session.client("iam").create_user(UserName="auditor")
+    assert inactive_users(compliant_aws).status is Status.PASS
+    later = replace(compliant_aws, now=datetime.now(UTC) + timedelta(days=MAX_USER_IDLE_DAYS + 1))
+    outcome = inactive_users(later)
+    assert outcome.status is Status.FAIL
+    assert outcome.evidence["resources"][0]["user"] == "auditor"
+
+
+def test_user_idle_time_counts_from_latest_console_or_key_use() -> None:
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    user = {"UserName": "ops", "CreateDate": now - timedelta(days=400), "PasswordLastUsed": now - timedelta(days=200)}
+    assert user_activity(user, now - timedelta(days=5), now)["idle_days"] == 5
+    assert user_activity(user, None, now)["idle_days"] == 200
+    assert user_activity({**user, "PasswordLastUsed": None}, None, now)["idle_days"] == 400

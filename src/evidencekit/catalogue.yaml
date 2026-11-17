@@ -23,6 +23,18 @@ controls:
       - aws.iam.unused_access_keys
       - github.repo.secret_scanning
 
+  - id: A.5.18
+    title: Access rights
+    rationale: >
+      Access rights must be reviewed and removed when they are no longer needed.
+      An IAM user or access key that has not been used for months is a right
+      that a review should have withdrawn.
+    hds:
+      - "EXI 05 D.a: risk of failing to control the attribution, modification and withdrawal of access rights"
+    checks:
+      - aws.iam.inactive_users
+      - aws.iam.unused_access_keys
+
   - id: A.5.23
     title: Information security for use of cloud services
     rationale: >
@@ -83,23 +95,26 @@ controls:
   - id: A.8.15
     title: Logging
     rationale: >
-      Activity must be logged in every region, and the logs must be protected
-      against tampering so that they can support an investigation.
+      Activity must be logged in every region, the logs must be protected
+      against tampering, and they must be kept long enough to support an
+      investigation.
     hds:
       - "EXI 05 D.c: risk of losing the traceability and accountability of access"
     checks:
       - aws.cloudtrail.multi_region
       - aws.cloudtrail.log_validation
+      - aws.cloudtrail.log_retention
 
   - id: A.8.24
     title: Use of cryptography
     rationale: >
       Data at rest must be encrypted so that storage media or reallocated storage
-      do not expose readable data.
+      do not expose readable data, and encryption keys must be rotated.
     hds:
       - "EXI 05 B: risk of losing control of storage media, including the reallocation of storage space"
     checks:
       - aws.s3.default_encryption
+      - aws.kms.key_rotation
 
   - id: A.8.28
     title: Secure coding

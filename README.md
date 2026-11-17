@@ -2,7 +2,7 @@
 
 ## Description
 
-Collects audit evidence for ISO 27001 Annex A and HDS controls from AWS (IAM, S3, CloudTrail) and GitHub (2FA, branch protection, secret scanning, Dependabot).
+Collects audit evidence for ISO 27001 Annex A and HDS controls from AWS (IAM, S3, CloudTrail, KMS) and GitHub (2FA, branch protection, secret scanning, Dependabot).
 
 Each check stores the raw API data it relied on. A run produces a timestamped evidence pack where every file is hashed with SHA-256, and `verify` reports any file changed, added or removed afterwards.
 
@@ -16,7 +16,7 @@ Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
 uv sync
 ```
 
-AWS credentials come from the standard boto3 chain and need read-only access to IAM, S3 and CloudTrail. GitHub checks use `GITHUB_TOKEN`; the 2FA and security settings are only visible to an organization owner or repository admin.
+AWS credentials come from the standard boto3 chain and need read-only access to IAM, S3, CloudTrail and KMS. GitHub checks use `GITHUB_TOKEN`; the 2FA and security settings are only visible to an organization owner or repository admin.
 
 ## Run
 

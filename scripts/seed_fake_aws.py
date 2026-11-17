@@ -50,6 +50,10 @@ def main() -> None:
     )
     cloudtrail.start_logging(Name=TRAIL)
 
+    kms = session.client("kms")
+    key_id = kms.create_key(Description=SECURE_BUCKET)["KeyMetadata"]["KeyId"]
+    kms.enable_key_rotation(KeyId=key_id)
+
 
 if __name__ == "__main__":
     main()

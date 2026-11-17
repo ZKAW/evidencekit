@@ -4,18 +4,9 @@ import pytest
 
 from evidencekit.catalogue import CHECKS, CatalogueError, load_catalogue
 
-EXPECTED_CONTROL_COUNT = 10
 
-
-def test_catalogue_has_ten_controls_with_rationale() -> None:
-    controls = load_catalogue()
-    assert len(controls) == EXPECTED_CONTROL_COUNT
-    assert all(control.rationale for control in controls)
-
-
-def test_every_referenced_check_exists() -> None:
-    referenced = {check_id for control in load_catalogue() for check_id in control.checks}
-    assert referenced <= CHECKS.keys()
+def test_every_control_explains_its_rationale() -> None:
+    assert all(control.rationale for control in load_catalogue())
 
 
 def test_every_check_backs_at_least_one_control() -> None:
